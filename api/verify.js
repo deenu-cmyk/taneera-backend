@@ -1,7 +1,17 @@
 import crypto from "crypto";
 
+const ALLOWED_ORIGINS = [
+  "https://www.taneeraa.com",
+  "https://taneeraa.com",
+  "https://deenu-cmyk.github.io", // old address, remove once the new domain works
+];
+
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://deenu-cmyk.github.io");
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 
