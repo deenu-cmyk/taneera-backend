@@ -1,19 +1,19 @@
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-// ---- CONFIG: change these to match your data ----
+// ---- CONFIG: change these to match your Firestore data ----
 const PRODUCTS_COLLECTION = "products";
 const COUPONS_COLLECTION = "coupons";
 const PRICE_FIELD = "price";          // price in rupees
 const SHIPPING_FEE = 60;              // flat shipping fee in rupees
-const FREE_SHIPPING_ABOVE = 999;      // free shipping when subtotal reaches this
-// -------------------------------------------------
+const FREE_SHIPPING_ABOVE = 999;      // free shipping when the total reaches this
+// ------------------------------------------------------------
 
 const ALLOWED_ORIGINS = [
   "https://shop.taneeraa.com",
   "https://www.taneeraa.com",
   "https://taneeraa.com",
-  "https://deenu-cmyk.github.io",
+  "https://deenu-cmyk.github.io", // old address, remove once the new domain works
 ];
 
 export function cors(req, res) {
@@ -29,13 +29,18 @@ export function cors(req, res) {
   return false;
 }
 
+// Removes stray spaces, line breaks and wrapping quotes from env values
+function clean(v) {
+  return String(v || "").trim().replace(/^["']|["']$/g, "");
+}
+
 function getDb() {
   if (!getApps().length) {
     initializeApp({
       credential: cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: (process.env.FIREBASE_PRIVATE_KEY || "").replace(/\\n/g, "\n"),
+        projectId: clean(process.env.FIREBASE_PROJECT_ID),
+        clientEmail: clean(process.env.FIREBASE_CLIENT_EMAIL),
+        privateKey: clean(process.env.FIREBASE_PRIVATE_KEY).replace(/\\n/g, "\n"),
       }),
     });
   }
