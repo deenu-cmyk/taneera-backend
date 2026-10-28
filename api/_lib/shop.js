@@ -7,9 +7,8 @@ const COUPONS_COLLECTION = "coupons";
 const PRICE_FIELD = "price";        // your price field name in Firestore
 
 // Shipping rules (in rupees):
-// - Always free:            SHIPPING_FEE = 0
-// - Flat fee, e.g. Rs 50:   SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 0
-// - Free above Rs 500:      SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 500
+// - Flat Rs 100 on every order:      SHIPPING_FEE = 100, FREE_SHIPPING_ABOVE = 0
+// - Rs 100, free above Rs 999:       SHIPPING_FEE = 100, FREE_SHIPPING_ABOVE = 999
 const SHIPPING_FEE = 100;
 const FREE_SHIPPING_ABOVE = 0;
 // --------------------------------------------------
