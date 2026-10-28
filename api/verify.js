@@ -10,10 +10,15 @@ const ALLOWED_ORIGINS = [
   "https://deenu-cmyk.github.io", // old address, remove once the new domain works
 ];
 
-const rzp = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+function missingEnv() {
+  return [
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "FIREBASE_PROJECT_ID",
+    "FIREBASE_CLIENT_EMAIL",
+    "FIREBASE_PRIVATE_KEY",
+  ].filter((k) => !process.env[k]);
+}
 
 // Firebase Admin (service account) — can write to Firestore even though the public rules are strict.
 function getDb() {
@@ -30,6 +35,7 @@ function getDb() {
 }
 
 export default async function handler(req, res) {
+  // CORS first, so every response below carries the headers
   const origin = req.headers.origin;
   if (ALLOWED_ORIGINS.includes(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
@@ -44,6 +50,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ verified: false });
   }
 
+  // Fail early (before capturing any money) if the server is misconfigured
+  const missing = missingEnv();
+  if (missing.length) {
+    console.error("verify: missing env vars:", missing.join(", "));
+    return res.status(500).json({ verified: false, error: "Server configuration error" });
+  }
+
   // 1) Check the signature Razorpay gave the customer's browser
   const expected = crypto
     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
@@ -56,6 +69,11 @@ export default async function handler(req, res) {
   }
 
   try {
+    const rzp = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
     // 2) Ask Razorpay itself for the payment: must belong to this order and be paid
     let payment = await rzp.payments.fetch(razorpay_payment_id);
     if (payment.order_id !== razorpay_order_id) return res.status(200).json({ verified: false });
