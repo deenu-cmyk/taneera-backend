@@ -12,6 +12,9 @@ const ALLOWED_ORIGINS = [
   "https://deenu-cmyk.github.io", // old address, remove once the new domain works
 ];
 
+const SHIPPING_FEE = 100;         // standard shipping in rupees (same as checkout.html)
+const FREE_SHIPPING_ABOVE = 999;  // free when amount after discount is above this
+
 // Your Firebase project ID (set it in Vercel as FIREBASE_PROJECT_ID)
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FS = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
@@ -118,7 +121,10 @@ export default async function handler(req, res) {
       appliedCode = coupon.code;
     }
 
-    const total = Math.max(0, subtotal - discount);
+    // Same shipping rule as checkout.html: ₹100, free when the amount after discount is above ₹999
+    const afterDiscount = Math.max(0, subtotal - discount);
+    const shipping = afterDiscount > FREE_SHIPPING_ABOVE ? 0 : SHIPPING_FEE;
+    const total = afterDiscount + shipping;
     if (total < 1) return res.status(400).json({ error: "Order total is too low" });
 
     const order = await rzp.orders.create({
@@ -134,6 +140,7 @@ export default async function handler(req, res) {
       keyId: process.env.RAZORPAY_KEY_ID,
       subtotal,
       discount,
+      shipping,
       total,
     });
   } catch (err) {
