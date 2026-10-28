@@ -6,6 +6,7 @@ const rzp = new Razorpay({
 });
 
 const ALLOWED_ORIGINS = [
+  "https://shop.taneeraa.com",
   "https://www.taneeraa.com",
   "https://taneeraa.com",
   "https://deenu-cmyk.github.io", // old address, remove once the new domain works
