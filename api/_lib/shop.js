@@ -10,7 +10,7 @@ const PRICE_FIELD = "price";        // your price field name in Firestore
 // - Always free:            SHIPPING_FEE = 0
 // - Flat fee, e.g. Rs 50:   SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 0
 // - Free above Rs 500:      SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 500
-const SHIPPING_FEE = 0;
+const SHIPPING_FEE = 100;
 const FREE_SHIPPING_ABOVE = 0;
 // --------------------------------------------------
 
