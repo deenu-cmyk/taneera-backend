@@ -1,13 +1,18 @@
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-// ---- CONFIG: change these to match your Firestore data ----
+// ---- CONFIG: change these to match your store ----
 const PRODUCTS_COLLECTION = "products";
 const COUPONS_COLLECTION = "coupons";
-const PRICE_FIELD = "price";          // set this to your real price field name
-const SHIPPING_FEE = 60;              // flat shipping fee in rupees
-const FREE_SHIPPING_ABOVE = 999;      // free shipping when the total reaches this
-// ------------------------------------------------------------
+const PRICE_FIELD = "price";        // your price field name in Firestore
+
+// Shipping rules (in rupees):
+// - Always free:            SHIPPING_FEE = 0
+// - Flat fee, e.g. Rs 50:   SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 0
+// - Free above Rs 500:      SHIPPING_FEE = 50, FREE_SHIPPING_ABOVE = 500
+const SHIPPING_FEE = 0;
+const FREE_SHIPPING_ABOVE = 0;
+// --------------------------------------------------
 
 const ALLOWED_ORIGINS = [
   "https://shop.taneeraa.com",
@@ -65,6 +70,12 @@ function readPrice(data) {
   return Number(String(raw ?? "").replace(/[^0-9.]/g, ""));
 }
 
+function shippingFor(amountAfterDiscount) {
+  if (SHIPPING_FEE <= 0) return 0;
+  if (FREE_SHIPPING_ABOVE > 0 && amountAfterDiscount >= FREE_SHIPPING_ABOVE) return 0;
+  return SHIPPING_FEE;
+}
+
 export async function priceCart(items, couponCode) {
   if (!Array.isArray(items) || items.length === 0) throw badRequest("Cart is empty");
 
@@ -114,7 +125,7 @@ export async function priceCart(items, couponCode) {
   }
 
   const afterDiscount = subtotal - discount;
-  const shipping = afterDiscount >= FREE_SHIPPING_ABOVE ? 0 : SHIPPING_FEE;
+  const shipping = shippingFor(afterDiscount);
   const total = Math.round((afterDiscount + shipping) * 100) / 100;
 
   return {
