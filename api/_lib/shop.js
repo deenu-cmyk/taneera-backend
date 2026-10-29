@@ -70,10 +70,24 @@ function readPrice(data) {
   return Number(String(raw ?? "").replace(/[^0-9.]/g, ""));
 }
 
-function shippingFor(amountAfterDiscount) {
-  if (SHIPPING_FEE <= 0) return 0;
-  if (FREE_SHIPPING_ABOVE > 0 && amountAfterDiscount > FREE_SHIPPING_ABOVE) return 0;
-  return SHIPPING_FEE;
+// Shipping charges are set by the admin (Firestore doc settings/shipping); the constants above are the fallback.
+async function getShipping(db) {
+  let fee = SHIPPING_FEE, freeAbove = FREE_SHIPPING_ABOVE;
+  try {
+    const snap = await db.collection("settings").doc("shipping").get();
+    if (snap.exists) {
+      const d = snap.data();
+      if (Number.isFinite(Number(d.fee)) && Number(d.fee) >= 0) fee = Number(d.fee);
+      if (Number.isFinite(Number(d.freeAbove)) && Number(d.freeAbove) >= 0) freeAbove = Number(d.freeAbove);
+    }
+  } catch (e) { console.error("getShipping: using default charges:", e.message); }
+  return { fee, freeAbove };
+}
+
+function shippingFor(amountAfterDiscount, ship) {
+  if (ship.fee <= 0) return 0;
+  if (ship.freeAbove > 0 && amountAfterDiscount > ship.freeAbove) return 0;
+  return ship.fee;
 }
 
 async function findCoupon(db, code) {
@@ -159,7 +173,7 @@ export async function priceCart(items, couponCode) {
   }
 
   const afterDiscount = subtotal - discount;
-  const shipping = shippingFor(afterDiscount);
+  const shipping = shippingFor(afterDiscount, await getShipping(db));
   const total = Math.round((afterDiscount + shipping) * 100) / 100;
 
   return {
