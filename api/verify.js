@@ -1,120 +1,70 @@
 import crypto from "crypto";
 import Razorpay from "razorpay";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
-import { cors, clean, getDb, priceCart } from "./_lib/shop.js";
+import { initializeApp, getApps, cert } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { cors, priceCart } from "./_lib/shop.js";
 
-const DELIVERY_DAYS = 5;
-const s = (v, n = 200) => String(v ?? "").trim().slice(0, n);
+const rzp = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
-// Order as the checkout page needs it (no Firestore timestamps)
-function publicOrder(d) {
-  const { createdAt, estimatedDeliveryAt, deliveredAt, statusHistory, ...rest } = d;
-  return rest;
+function getDb() {
+  if (!getApps().length) {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!raw) throw Object.assign(new Error("Server setup incomplete: FIREBASE_SERVICE_ACCOUNT is missing in Vercel"), { status: 503 });
+    let creds;
+    try { creds = JSON.parse(raw); }
+    catch { throw Object.assign(new Error("Server setup incomplete: FIREBASE_SERVICE_ACCOUNT is not valid JSON"), { status: 503 }); }
+    initializeApp({ credential: cert(creds) });
+  }
+  return getFirestore();
 }
+
+const fail = (msg) => Object.assign(new Error(msg), { status: 400 });
 
 export default async function handler(req, res) {
   if (cors(req, res)) return;
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, order: o } = req.body || {};
-  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !o) {
-    return res.status(400).json({ verified: false, error: "Missing details" });
-  }
-
-  const keyId = clean(process.env.RAZORPAY_KEY_ID);
-  const keySecret = clean(process.env.RAZORPAY_KEY_SECRET);
-  if (!keyId || !keySecret) {
-    console.error("verify: missing Razorpay env vars");
-    return res.status(500).json({ verified: false, error: "Server configuration error" });
-  }
-
-  // 1) Signature check
-  const expected = crypto
-    .createHmac("sha256", keySecret)
-    .update(razorpay_order_id + "|" + razorpay_payment_id)
-    .digest("hex");
-  const a = Buffer.from(expected);
-  const b = Buffer.from(String(razorpay_signature));
-  if (!(a.length === b.length && crypto.timingSafeEqual(a, b))) {
-    console.error("verify: signature mismatch", razorpay_payment_id);
-    return res.status(400).json({ verified: false, error: "Signature mismatch" });
-  }
-
   try {
-    const db = getDb();
-
-    // 2) Already saved (customer retried)? Return the same order, never a duplicate
-    const orderRef = db.collection("orders").doc("rzp_" + razorpay_payment_id);
-    const existing = await orderRef.get();
-    if (existing.exists) {
-      return res.status(200).json({ verified: true, order: publicOrder(existing.data()) });
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, items, couponCode } = req.body || {};
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !items) {
+      throw fail("Missing payment details");
     }
 
-    // 3) Ask Razorpay itself about the payment
-    const rzp = new Razorpay({ key_id: keyId, key_secret: keySecret });
-    let payment = await rzp.payments.fetch(razorpay_payment_id);
-    if (payment.order_id !== razorpay_order_id) {
-      return res.status(400).json({ verified: false, error: "Order mismatch" });
+    // 1) Check the payment signature
+    const expected = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_order_id + "|" + razorpay_payment_id)
+      .digest("hex");
+    const a = Buffer.from(expected);
+    const b = Buffer.from(String(razorpay_signature));
+    if (!(a.length === b.length && crypto.timingSafeEqual(a, b))) throw fail("Payment could not be verified");
+
+    // 2) Ask Razorpay itself whether this payment is real, and for this order
+    const payment = await rzp.payments.fetch(razorpay_payment_id);
+    if (payment.order_id !== razorpay_order_id || !["captured", "authorized"].includes(payment.status)) {
+      throw fail("Payment is not completed");
     }
 
-    // 4) Re-price the cart on the server and compare with what was actually paid
-    const priced = await priceCart(o.items, o.couponCode);
-    if (Math.round(priced.total * 100) !== Number(payment.amount)) {
-      console.error("verify: AMOUNT MISMATCH", razorpay_payment_id, "paid", payment.amount, "expected", Math.round(priced.total * 100));
-      return res.status(400).json({ verified: false, error: "Amount mismatch" });
-    }
+    // 3) The amount paid must match the order worked out from your product list
+    const priced = await priceCart(items, couponCode);
+    if (Number(payment.amount) !== Math.round(priced.total * 100)) throw fail("Amount paid does not match the order");
 
-    if (payment.status === "authorized") {
-      payment = await rzp.payments.capture(razorpay_payment_id, payment.amount, payment.currency);
-    }
-    if (payment.status !== "captured") {
-      console.error("verify: payment not captured, status =", payment.status, razorpay_payment_id);
-      return res.status(400).json({ verified: false, error: "Payment not captured" });
-    }
-
-    // 5) Save the Paid order (Admin SDK, so Firestore rules do not block it)
-    const c = o.customer || {};
-    const f = {
-      email: s(c.email), phone: s(c.phone, 15), fname: s(c.fname), lname: s(c.lname),
-      address: s(c.address, 300), apt: s(c.apt, 200), landmark: s(c.landmark, 200),
-      city: s(c.city), state: s(c.state), pin: s(c.pin, 6), alt: s(c.alt, 15),
-    };
-    const fullName = (f.fname + " " + f.lname).trim();
-    const addressText = [
-      fullName,
-      f.address + (f.apt ? ", " + f.apt : ""),
-      f.landmark ? "Landmark: " + f.landmark : "",
-      `${f.city}, ${f.state} - ${f.pin}`,
-    ].filter(Boolean).join("\n");
-
-    const data = {
-      orderNumber: "TAN-" + Math.floor(10000 + Math.random() * 89999),
-      customerId: s(o.customerId, 128), customerEmail: f.email, customerName: fullName, receiverName: fullName,
-      items: priced.lines, subtotal: priced.subtotal, discount: priced.discount,
-      shippingCost: priced.shipping, shippingMethod: "Standard", total: priced.total,
-      address: addressText, customerPhone: f.phone, altPhone: f.alt,
-      shippingAddress: { house: f.address, street: f.apt, landmark: f.landmark, city: f.city, state: f.state, pin: f.pin },
-      utr: razorpay_payment_id, razorpayOrderId: razorpay_order_id,
-      paymentMethod: "Razorpay", paymentStatus: "Paid", status: "Placed",
-    };
-    if (priced.couponCode && priced.discount) data.couponCode = priced.couponCode;
-
-    await orderRef.set({
-      ...data,
-      createdAt: FieldValue.serverTimestamp(),
-      estimatedDeliveryAt: Timestamp.fromDate(new Date(Date.now() + DELIVERY_DAYS * 86400000)),
-      deliveredAt: null,
-      statusHistory: [{ status: "Placed", timestamp: Timestamp.now() }],
-    });
-
-    await db.collection("verifiedPayments").doc(razorpay_payment_id).set({
-      orderId: razorpay_order_id, amount: Number(payment.amount), currency: payment.currency,
+    // 4) Record the verified payment. Your Firestore rules only let a Paid order be saved
+    //    when this record exists for the same payment ID and amount.
+    await getDb().collection("verifiedPayments").doc(razorpay_payment_id).set({
+      amount: Number(payment.amount),
+      razorpayOrderId: razorpay_order_id,
+      status: payment.status,
       verifiedAt: FieldValue.serverTimestamp(),
     });
 
-    return res.status(200).json({ verified: true, order: data });
+    return res.status(200).json({ verified: true, total: priced.total });
   } catch (err) {
-    console.error("verify failed:", err);
-    return res.status(500).json({ verified: false, error: "Could not verify payment" });
+    console.error(err);
+    const status = err.status || 500;
+    return res.status(status).json({ verified: false, error: status === 500 ? "Could not verify the payment" : err.message });
   }
 }
