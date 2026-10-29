@@ -1,17 +1,17 @@
 import { initializeApp, getApps, cert } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-// ---- CONFIG: change these to match your store ----
+// ---- CONFIG: must match checkout.html ----
 const PRODUCTS_COLLECTION = "products";
 const COUPONS_COLLECTION = "coupons";
-const PRICE_FIELD = "price";        // your price field name in Firestore
+const PRICE_FIELD = "sellingPrice"; // checkout.html reads p.sellingPrice
 
-// Shipping rules (in rupees):
-// - Flat Rs 100 on every order:      SHIPPING_FEE = 100, FREE_SHIPPING_ABOVE = 0
-// - Rs 100, free above Rs 999:       SHIPPING_FEE = 100, FREE_SHIPPING_ABOVE = 999
+// Shipping (in rupees). Same rule as checkout.html:
+// Rs 100, free when the amount after discount is ABOVE Rs 999.
+// For flat Rs 100 on every order, set FREE_SHIPPING_ABOVE = 0 here AND in checkout.html.
 const SHIPPING_FEE = 100;
-const FREE_SHIPPING_ABOVE = 0;
-// --------------------------------------------------
+const FREE_SHIPPING_ABOVE = 999;
+// ------------------------------------------
 
 const ALLOWED_ORIGINS = [
   "https://shop.taneeraa.com",
@@ -34,11 +34,11 @@ export function cors(req, res) {
 }
 
 // Removes stray spaces, line breaks and wrapping quotes from env values
-function clean(v) {
+export function clean(v) {
   return String(v || "").trim().replace(/^["']|["']$/g, "");
 }
 
-function getDb() {
+export function getDb() {
   if (!getApps().length) {
     initializeApp({
       credential: cert({
@@ -61,9 +61,10 @@ function badRequest(message) {
 function readPrice(data) {
   const raw =
     data[PRICE_FIELD] ??
-    data.salePrice ??
     data.sellingPrice ??
+    data.salePrice ??
     data.offerPrice ??
+    data.price ??
     data.amount ??
     data.mrp;
   return Number(String(raw ?? "").replace(/[^0-9.]/g, ""));
@@ -71,8 +72,16 @@ function readPrice(data) {
 
 function shippingFor(amountAfterDiscount) {
   if (SHIPPING_FEE <= 0) return 0;
-  if (FREE_SHIPPING_ABOVE > 0 && amountAfterDiscount >= FREE_SHIPPING_ABOVE) return 0;
+  if (FREE_SHIPPING_ABOVE > 0 && amountAfterDiscount > FREE_SHIPPING_ABOVE) return 0;
   return SHIPPING_FEE;
+}
+
+async function findCoupon(db, code) {
+  // checkout.html stores the code in a "code" field; also accept the code as the document ID
+  const q = await db.collection(COUPONS_COLLECTION).where("code", "==", code).limit(1).get();
+  if (!q.empty) return q.docs[0].data();
+  const snap = await db.collection(COUPONS_COLLECTION).doc(code).get();
+  return snap.exists ? snap.data() : null;
 }
 
 export async function priceCart(items, couponCode) {
@@ -80,6 +89,7 @@ export async function priceCart(items, couponCode) {
 
   const db = getDb();
   let subtotal = 0;
+  const lines = [];
 
   for (const item of items) {
     const id = item.id ?? item.productId;
@@ -101,6 +111,13 @@ export async function priceCart(items, couponCode) {
       throw badRequest("A product has an invalid price");
     }
     subtotal += price * qty;
+    lines.push({
+      productId: String(id),
+      name: data.name || "",
+      price,
+      qty,
+      imageUrl: data.imageUrl || "",
+    });
   }
 
   let discount = 0;
@@ -108,9 +125,8 @@ export async function priceCart(items, couponCode) {
 
   if (couponCode) {
     const code = String(couponCode).trim().toUpperCase();
-    const snap = await db.collection(COUPONS_COLLECTION).doc(code).get();
-    if (!snap.exists) throw badRequest("Invalid coupon code");
-    const c = snap.data();
+    const c = await findCoupon(db, code);
+    if (!c) throw badRequest("Invalid coupon code");
     if (c.active === false) throw badRequest("This coupon is no longer active");
     if (c.expiresAt && c.expiresAt.toDate && c.expiresAt.toDate() < new Date()) {
       throw badRequest("This coupon has expired");
@@ -118,7 +134,26 @@ export async function priceCart(items, couponCode) {
     if (c.minOrder && subtotal < Number(c.minOrder)) {
       throw badRequest("Order total is too low for this coupon");
     }
-    discount = c.type === "percent" ? (subtotal * Number(c.value)) / 100 : Number(c.value);
+
+    // Percentage coupons (same maths as checkout.html), with fallback to the older type/value format
+    const pct =
+      c.discountPercentage != null
+        ? Number(c.discountPercentage)
+        : c.type === "percent"
+        ? Number(c.value)
+        : null;
+
+    if (pct != null) {
+      const ids = Array.isArray(c.productIds) ? c.productIds : [];
+      const legacy = c.discountPercentage == null; // older format applies to everything
+      const eligible = lines.reduce(
+        (n, l) => (legacy || c.appliesToAllProducts || ids.includes(l.productId) ? n + l.price * l.qty : n),
+        0
+      );
+      discount = Math.round((eligible * pct) / 100);
+    } else {
+      discount = Number(c.value) || 0; // flat amount
+    }
     discount = Math.min(Math.max(discount, 0), subtotal);
     appliedCode = code;
   }
@@ -133,5 +168,6 @@ export async function priceCart(items, couponCode) {
     shipping,
     total,
     couponCode: appliedCode,
+    lines,
   };
 }
