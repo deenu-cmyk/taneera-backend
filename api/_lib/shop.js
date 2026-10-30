@@ -71,21 +71,32 @@ function readPrice(data) {
   return Number(String(raw ?? "").replace(/[^0-9.]/g, ""));
 }
 
-// Reads the shipping charges saved in Admin Panel -> Settings
+// Reads the shipping charges saved by the admin (Firestore "settings" collection).
+// IMPORTANT: this uses the SAME search rules as loadShipping() in checkout.html,
+// so the website and the server always calculate the same shipping amount.
 async function getShippingRules(db) {
-  let fee = DEFAULT_SHIPPING_FEE;
-  let freeAbove = DEFAULT_FREE_SHIPPING_ABOVE;
+  let fee = null;
+  let free = null;
   try {
-    const snap = await db.collection("settings").doc("shipping").get();
-    if (snap.exists) {
-      const d = snap.data();
-      if (d.fee !== undefined && d.fee !== null && Number.isFinite(Number(d.fee)) && Number(d.fee) >= 0) fee = Number(d.fee);
-      if (d.freeAbove !== undefined && d.freeAbove !== null && Number.isFinite(Number(d.freeAbove)) && Number(d.freeAbove) >= 0) freeAbove = Number(d.freeAbove);
-    }
+    const snap = await db.collection("settings").get();
+    snap.docs.forEach((d) => {
+      const docIsShipping = /ship|deliver|freight/i.test(d.id);
+      Object.entries(d.data()).forEach(([k, v]) => {
+        if (v === "" || v === null || typeof v === "boolean") return;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return;
+        if (!docIsShipping && !/ship|deliver|freight/i.test(k)) return;
+        if (/free|above|min|limit|threshold|over/i.test(k)) { if (free === null) free = n; }
+        else if (fee === null) fee = n;
+      });
+    });
   } catch (err) {
     console.error("priceCart: could not read shipping settings, using defaults:", err);
   }
-  return { fee, freeAbove };
+  return {
+    fee: fee !== null ? fee : DEFAULT_SHIPPING_FEE,
+    freeAbove: free !== null ? free : DEFAULT_FREE_SHIPPING_ABOVE,
+  };
 }
 
 function shippingFor(amountAfterDiscount, rules) {
