@@ -7,11 +7,13 @@ const COUPONS_COLLECTION = "coupons";
 const PRICE_FIELD = "sellingPrice"; // checkout.html reads p.sellingPrice
 
 // Shipping comes from Admin Panel -> Settings (Firestore doc settings/shipping).
-// These defaults are only used if that setting has never been saved.
+// These defaults are only used if that setting has never been saved (or holds a bad value).
 //   fee = 0          -> shipping is free for everyone
 //   freeAbove = 0    -> the fee is charged on every order
 const DEFAULT_SHIPPING_FEE = 100;
 const DEFAULT_FREE_SHIPPING_ABOVE = 999;
+const MAX_SHIPPING_FEE = 2000;   // FIX: a fee above this is treated as bad data and ignored (same as checkout.html)
+const MAX_FREE_LIMIT = 100000;   // FIX: a free-shipping limit above this is treated as bad data and ignored
 // ------------------------------------------
 
 const ALLOWED_ORIGINS = [
@@ -74,6 +76,8 @@ function readPrice(data) {
 // Reads the shipping charges saved by the admin (Firestore "settings" collection).
 // IMPORTANT: this uses the SAME search rules as loadShipping() in checkout.html,
 // so the website and the server always calculate the same shipping amount.
+// FIX: only plain numbers are read, date/phone/id-looking fields are skipped, and values outside a
+// sensible range are ignored, so a stray number in "settings" can never become the shipping charge.
 async function getShippingRules(db) {
   let fee = null;
   let free = null;
@@ -82,12 +86,14 @@ async function getShippingRules(db) {
     snap.docs.forEach((d) => {
       const docIsShipping = /ship|deliver|freight/i.test(d.id);
       Object.entries(d.data()).forEach(([k, v]) => {
-        if (v === "" || v === null || typeof v === "boolean") return;
+        if (typeof v !== "number" && typeof v !== "string") return;      // skips Timestamps, objects, arrays, booleans, null
+        if (typeof v === "string" && v.trim() === "") return;
+        if (/time|date|updated|created|phone|mobile|contact|id$/i.test(k)) return; // skips non-price fields
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) return;
         if (!docIsShipping && !/ship|deliver|freight/i.test(k)) return;
-        if (/free|above|min|limit|threshold|over/i.test(k)) { if (free === null) free = n; }
-        else if (fee === null) fee = n;
+        if (/free|above|min|limit|threshold|over/i.test(k)) { if (free === null && n <= MAX_FREE_LIMIT) free = n; }
+        else if (fee === null && n <= MAX_SHIPPING_FEE) fee = n;
       });
     });
   } catch (err) {
